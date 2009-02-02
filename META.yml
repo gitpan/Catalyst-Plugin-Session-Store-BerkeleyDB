@@ -23,7 +23,8 @@ requires:
   Catalyst::Plugin::Session: 0
   Catalyst::Runtime: 0
   Class::Data::Inheritable: 0
+  MRO::Compat: 0
   Scalar::Util: 0
   Storable: 0
   namespace::clean: 0
-version: 0.01
+version: 0.02
