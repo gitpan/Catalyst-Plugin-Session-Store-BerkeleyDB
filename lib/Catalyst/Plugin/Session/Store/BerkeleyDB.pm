@@ -8,9 +8,11 @@ use BerkeleyDB::Manager;
 use Storable qw(nfreeze thaw);
 use Scalar::Util qw(blessed);
 use Catalyst::Utils;
+use Carp qw(confess);
+
 use namespace::clean;
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 use base 'Class::Data::Inheritable', 'Catalyst::Plugin::Session::Store';
 
@@ -23,14 +25,14 @@ __PACKAGE__->mk_classdata($_db);
 sub setup_session {
     my $app = shift;
 
-    my $manager = delete $app->config->{session}{manager} || +{
+    my $manager = delete $app->_session_plugin_config->{manager} || +{
         home => Path::Class::Dir->new(
             Catalyst::Utils::class2tempdir($app), 'sessions',
         ),
         create => 1,
     };
 
-    my $db = delete $app->config->{session}{database} || 'catalyst_sessions';
+    my $db = delete $app->_session_plugin_config->{database} || 'catalyst_sessions';
 
     if(!blessed $manager){
         $manager = BerkeleyDB::Manager->new( $manager );
@@ -46,14 +48,25 @@ sub setup_session {
     return $app->maybe::next::method(@_);
 }
 
+sub _data_is_raw {
+    my ($c, $id, $data) = @_;
+    return 1 if $id =~ /^expires:/;
+    return 0;
+}
+
 sub get_session_data {
     my ($c, $id) = @_;
 
     my $data;
-    my $status = $c->$_db->db_get($id, $data);
+    $c->$_manager->txn_do(sub {
+        my $status = $c->$_db->db_get($id, $data);
 
-    if($data && !$status) {
-        if($id =~ /^expires:/){
+        confess "BerkeleyDB error while fetching data: $BerkeleyDB::Error ($status)"
+          if $status;
+    });
+
+    if($data) {
+        if($c->_data_is_raw($id)){
             return $data;
         }
         return thaw($data);
@@ -63,13 +76,17 @@ sub get_session_data {
 
 sub store_session_data {
     my ($c, $id, $data) = @_;
-    my $frozen = ref $data ? nfreeze($data) : $data;
-    $c->$_db->db_put($id, $frozen);
+    my $frozen = $c->_data_is_raw($id) ? $data : nfreeze($data);
+    $c->$_manager->txn_do(sub {
+        $c->$_db->db_put($id, $frozen);
+    });
 }
 
 sub delete_session_data {
     my ($c, $id) = @_;
-    $c->$_db->db_del($id);
+    $c->$_manager->txn_do(sub {
+        $c->$_db->db_del($id);
+    });
 }
 
 sub delete_expired_sessions {
@@ -127,7 +144,7 @@ module will create a Berkeley database called "catalyst_sessions" in a
 directory called "sessions" in your app's temp directory.
 
 You can customize this, though, by setting the values of the "manager"
-and "database" keys in C<< $c->config->{session} >>.
+and "database" keys in C<< $c->config->{'Plugin::Session'} >>.
 
 The C<manager> key can be either an instance of C<BerkeleyDB::Manager>, or
 it can be a hash to pass to the constructor of C<BerkeleyDB::Manager>.  (Or
